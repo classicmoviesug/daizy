@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="manifest" href="manifest.json">
+<title>Daisy Your Personal Assistant</title>
+<style>
+body {
+    margin: 0;
+    font-family: Arial, sans-serif;
+    background-color: #ffffff;
+    color: #000000;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    align-items: center;
+    padding: 50px 20px;
+    text-align: center;
+}
+
+h1 { margin-bottom: 30px; }
+
+button {
+    padding: 10px 20px;
+    font-size: 16px;
+    border: none;
+    border-radius: 10px;
+    background-color: #000000;
+    color: #ffffff;
+    cursor: pointer;
+    transition: background-color 0.3s;
+}
+
+button:hover { background-color: #333333; }
+
+#response {
+    margin-top: 30px;
+    font-size: 18px;
+    max-width: 600px;
+    white-space: pre-line;
+}
+
+.reminder-section {
+    margin-top: 40px;
+    width: 100%;
+    max-width: 600px;
+    text-align: left;
+}
+
+.reminder-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background-color: #f7f7f7;
+    padding: 10px;
+    margin-top: 5px;
+    border-radius: 8px;
+    transition: background-color 0.3s;
+}
+
+.reminder-item.active {
+    animation: highlightFlash 1s infinite;
+}
+
+@keyframes highlightFlash {
+    0% { background-color: #ffd966; }
+    50% { background-color: #fff7cc; }
+    100% { background-color: #ffd966; }
+}
+</style>
+</head>
+<body>
+<h1>Daisy Your Personal Assistant</h1>
+
+<button id="talkButton">🎤 Talk to Daisy</button>
+<div id="response"></div>
+
+<div class="reminder-section">
+    <h3>Upcoming Reminders:</h3>
+    <div id="reminderList"></div>
+</div>
+
+<script>
+const responseDiv = document.getElementById('response');
+const talkButton = document.getElementById('talkButton');
+const reminderList = document.getElementById('reminderList');
+
+let reminders = JSON.parse(localStorage.getItem('reminders') || "[]");
+
+// --- Helper Functions ---
+function saveReminders(){ localStorage.setItem('reminders',JSON.stringify(reminders)); }
+
+function displayReminders(){
+    reminderList.innerHTML = "";
+    reminders.forEach(r=>{
+        const div=document.createElement('div');
+        div.className="reminder-item";
+        if(r.alerted) div.classList.add("active");
+
+        // Priority colors
+        let bg="";
+        if(r.task.includes("[High]")) bg="red";
+        else if(r.task.includes("[Medium]")) bg="orange";
+        else if(r.task.includes("[Low]")) bg="green";
+        if(bg && !r.alerted) div.style.backgroundColor=bg;
+
+        let label = r.label ? ` [${r.label}]` : "";
+        let recurLabel = r.recurring ? ` (${r.recurring})` : "";
+        div.innerHTML=`<span>${r.task}${label} at ${r.time}${recurLabel}</span>`;
+        reminderList.appendChild(div);
+    });
+    saveReminders();
+}
+
+// --- Voice Parsing Helpers ---
+function parseTime(str){
+    const inMinutes = str.match(/in (\d+) minutes?/);
+    if(inMinutes){
+        const date=new Date();
+        date.setMinutes(date.getMinutes()+parseInt(inMinutes[1]));
+        return {time: date.toTimeString().slice(0,5), date};
+    }
+    const tomorrowMatch = str.match(/tomorrow at (\d{1,2}):(\d{2})/);
+    if(tomorrowMatch){
+        const date=new Date();
+        date.setDate(date.getDate()+1);
+        date.setHours(parseInt(tomorrowMatch[1]));
+        date.setMinutes(parseInt(tomorrowMatch[2]));
+        return {time: date.toTimeString().slice(0,5), date};
+    }
+    const dateMatch = str.match(/(\d{1,2})\/(\d{1,2})\/(\d{4}) at (\d{1,2}):(\d{2})/);
+    if(dateMatch){
+        const date=new Date(dateMatch[3], dateMatch[2]-1, dateMatch[1], dateMatch[4], dateMatch[5]);
+        return {time: date.toTimeString().slice(0,5), date};
+    }
+    const monthMatch = str.match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+(\d{1,2}) at (\d{1,2}):(\d{2})/i);
+    if(monthMatch){
+        const monthMap={"jan":0,"feb":1,"mar":2,"apr":3,"may":4,"jun":5,"jul":6,"aug":7,"sep":8,"oct":9,"nov":10,"dec":11};
+        const date=new Date();
+        date.setMonth(monthMap[monthMatch[1].toLowerCase()]);
+        date.setDate(parseInt(monthMatch[2]));
+        date.setHours(parseInt(monthMatch[3]));
+        date.setMinutes(parseInt(monthMatch[4]));
+        return {time: date.toTimeString().slice(0,5), date};
+    }
+    const hhmm = str.match(/(\d{1,2}):(\d{2})/);
+    if(hhmm){
+        const date=new Date();
+        date.setHours(parseInt(hhmm[1]));
+        date.setMinutes(parseInt(hhmm[2]));
+        return {time: hhmm[0], date};
+    }
+    return null;
+}
+
+// --- Daisy Voice Recognition ---
+const SpeechRecognition=window.SpeechRecognition||window.webkitSpeechRecognition;
+if(!SpeechRecognition){ responseDiv.innerText="Your browser does not support voice recognition."; }
+else{
+    const recognition=new SpeechRecognition();
+    recognition.lang='en-US';
+    recognition.interimResults=false;
+    let daisyReply="";
+
+    talkButton.addEventListener('click',()=>{
+        responseDiv.innerText="Daisy is listening...";
+        recognition.start();
+    });
+
+    recognition.addEventListener('result',(event)=>{
+        const transcript=event.results[0][0].transcript.toLowerCase();
+        recognition.stop(); // Stop listening immediately
+
+        // --- Extract label ---
+        let labelMatch = transcript.match(/-+ label (.+)/i);
+        let label = labelMatch ? labelMatch[1].trim() : null;
+        let cleanTranscript = transcript.replace(/-+ label .+/i,"").trim();
+
+        // --- Add Reminder ---
+        if(cleanTranscript.includes("add a reminder") || cleanTranscript.includes("remind me")){
+            const {time: tTime, date: tDate} = parseTime(cleanTranscript) || {};
+            if(!tTime){ daisyReply="Could not parse the time. Please try again."; return; }
+
+            let task = cleanTranscript.replace(/remind me|add a reminder|every day|every week|every month|at \d{1,2}:\d{2}|tomorrow at \d{1,2}:\d{2}|in \d+ minutes|on \d{1,2}\/\d{1,2}\/\d{4}|[a-z]{3} \d{1,2}/gi,"").trim();
+
+            // --- Auto-priority detection ---
+            let priority = "";
+            if(/urgent|important|critical|immediately/i.test(task)) priority="[High]";
+            else if(/soon|normal|moderate/i.test(task)) priority="[Medium]";
+            else if(/optional|later|minor/i.test(task)) priority="[Low]";
+            if(priority) task = `${priority} ${task}`;
+
+            // --- Recurring detection ---
+            let recurringType = null;
+            if(/every day/i.test(cleanTranscript)) recurringType="daily";
+            else if(/every week/i.test(cleanTranscript)) recurringType="weekly";
+            else if(/every month/i.test(cleanTranscript)) recurringType="monthly";
+
+            reminders.push({task, time: tTime, alerted:false, recurring:recurringType, date:tDate, label});
+            displayReminders();
+            daisyReply=`Okay, I'll remind you to ${task}${label?` [${label}]`:""}${recurringType?` ${recurringType}`:""} at ${tTime}`;
+        }
+
+        // --- Show Reminders (with filter) ---
+        else if(cleanTranscript.includes("show me")){
+            let filtered = reminders;
+            if(cleanTranscript.includes("high priority")) filtered = reminders.filter(r=>r.task.includes("[High]"));
+            else if(cleanTranscript.includes("medium priority")) filtered = reminders.filter(r=>r.task.includes("[Medium]"));
+            else if(cleanTranscript.includes("low priority")) filtered = reminders.filter(r=>r.task.includes("[Low]"));
+            else{
+                let labelMatch2 = cleanTranscript.match(/labeled (.+)/i);
+                if(labelMatch2) filtered = reminders.filter(r=>r.label && r.label.toLowerCase().includes(labelMatch2[1].toLowerCase()));
+            }
+            if(filtered.length===0) daisyReply="No reminders found.";
+            else daisyReply="Your reminders:\n"+filtered.map(r=>`${r.task}${r.label?` [${r.label}]`:""} at ${r.time}${r.recurring?` (${r.recurring})`:""}`).join("\n");
+        }
+
+        // --- Delete reminder ---
+        else if(cleanTranscript.includes("delete reminder") || cleanTranscript.includes("remove reminder")){
+            const match=cleanTranscript.match(/(?:delete|remove) reminder (.+)/);
+            if(match){
+                const taskName=match[1];
+                const index=reminders.findIndex(r=>r.task.toLowerCase().includes(taskName.toLowerCase()) || (r.label && r.label.toLowerCase().includes(taskName.toLowerCase())));
+                if(index>=0){ reminders.splice(index,1); displayReminders(); daisyReply=`Deleted reminder: ${taskName}`; }
+                else daisyReply=`No reminder found with name: ${taskName}`;
+            }
+        }
+
+        // --- Edit, Snooze, Chat (same as before) ---
+        else if(cleanTranscript.includes("edit reminder")){
+            const match=cleanTranscript.match(/edit reminder (.+) to (\d{1,2}:\d{2})/);
+            if(match){
+                const taskName=match[1]; const newTime=match[2];
+                const reminder=reminders.find(r=>r.task.toLowerCase().includes(taskName.toLowerCase()) || (r.label && r.label.toLowerCase().includes(taskName.toLowerCase())));
+                if(reminder){ reminder.time=newTime; reminder.alerted=false; displayReminders(); daisyReply=`Edited reminder ${taskName} to ${newTime}`; }
+                else daisyReply=`No reminder found with name: ${taskName}`;
+            }
+        }
+        else if(cleanTranscript.includes("snooze")){
+            const match=cleanTranscript.match(/snooze (?:the )?(?:high|medium|low)? ?priority? reminder (.+) for (\d+) minutes/);
+            if(match){
+                const taskName=match[1]; const minutes=parseInt(match[2]);
+                const reminder=reminders.find(r=>r.task.toLowerCase().includes(taskName.toLowerCase()) || (r.label && r.label.toLowerCase().includes(taskName.toLowerCase())));
+                if(reminder){
+                    const [h,m]=reminder.time.split(":").map(Number);
+                    const date=new Date(); date.setHours(h); date.setMinutes(m+minutes);
+                    reminder.time=date.toTimeString().slice(0,5); reminder.date=date; reminder.alerted=false;
+                    displayReminders(); daisyReply=`Snoozed reminder: ${reminder.task} by ${minutes} minutes`;
+                } else daisyReply=`No reminder found with name: ${taskName}`;
+            }
+        }
+
+        // --- Chat ---
+        else if(cleanTranscript.includes("hello")) daisyReply="Hello, Benjamin! How can I help you?";
+        else if(cleanTranscript.includes("how are you")) daisyReply="I'm great, Benjamin! What about you?";
+        else if(cleanTranscript.includes("time")){
+            const now=new Date(); daisyReply=`The current time is ${now.getHours()}:${now.getMinutes()}`;
+        }
+        else if(cleanTranscript.includes("date")){
+            const now=new Date(); daisyReply=`Today's date is ${now.getDate()}/${now.getMonth()+1}/${now.getFullYear()}`;
+        }
+        else if(cleanTranscript.includes("goodbye")) daisyReply="Goodbye! Talk to you soon.";
+        else if(!daisyReply) daisyReply="I heard you, but I don't know how to respond yet.";
+
+        responseDiv.innerText=daisyReply;
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.speak(new SpeechSynthesisUtterance(daisyReply));
+    });
+}
+
+// --- Reminder Checker ---
+setInterval(()=>{
+    const now=new Date();
+    const currentTime=now.toTimeString().slice(0,5);
+    reminders.forEach(r=>{
+        if(!r.alerted && r.time===currentTime){
+            r.alerted=true;
+            displayReminders();
+            responseDiv.innerText=`🔔 Reminder: ${r.task} at ${r.time}`;
+            window.speechSynthesis.cancel();
+            window.speechSynthesis.speak(new SpeechSynthesisUtterance(`Reminder: ${r.task} at ${r.time}`));
+
+            if("Notification" in window){
+                if(Notification.permission==="granted") new Notification(`Reminder: ${r.task}`,{body:`Scheduled for ${r.time}`});
+                else if(Notification.permission!=="denied"){
+                    Notification.requestPermission().then(p=>{
+                        if(p==="granted") new Notification(`Reminder: ${r.task}`,{body:`Scheduled for ${r.time}`});
+                    });
+                }
+            }
+
+            // Recurrence
+            if(r.recurring==="daily") r.alerted=false;
+            else if(r.recurring==="weekly"){ 
+                let next=new Date(r.date); next.setDate(next.getDate()+7); 
+                r.date=next; r.time=next.toTimeString().slice(0,5); r.alerted=false;
+            }
+            else if(r.recurring==="monthly"){ 
+                let next=new Date(r.date); next.setMonth(next.date.getMonth()+1); 
+                r.date=next; r.time=next.toTimeString().slice(0,5); r.alerted=false;
+            }
+        }
+    });
+},30000);
+
+displayReminders();
+
+// --- Export / Import JSON ---
+document.getElementById("exportBtn").addEventListener("click",()=>{
+    const dataStr = JSON.stringify(reminders, null, 2);
+    const blob = new Blob([dataStr], {type:"application/json"});
+    const url = URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url; a.download="daisy_reminders.json"; a.click();
+    URL.revokeObjectURL(url);
+});
+
+document.getElementById("importBtn").addEventListener("click",()=>{
+    document.getElementById("importFile").click();
+});
+
+document.getElementById("importFile").addEventListener("change",(e)=>{
+    const file = e.target.files[0];
+    if(!file) return;
+    const reader=new FileReader();
+    reader.onload=function(ev){
+        try{
+            const imported=JSON.parse(ev.target.result);
+            reminders = reminders.concat(imported);
+            displayReminders();
+            alert("Reminders imported successfully!");
+        }catch(err){
+            alert("Invalid JSON file.");
+        }
+    };
+    reader.readAsText(file);
+});
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/service-worker.js')
+    .then(() => console.log('Service Worker Registered'))
+    .catch(err => console.log('SW registration failed: ', err));
+}
+</script>
+</body>
+</html>

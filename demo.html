@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Daisy – Your Personal Assistant</title>
+<style>
+body {
+    margin: 0;
+    font-family: Arial, sans-serif;
+    background-color: #ffffff;
+    color: #000000;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    align-items: center;
+    padding: 50px 20px;
+    text-align: center;
+}
+
+h1 { margin-bottom: 30px; }
+
+button {
+    padding: 10px 20px;
+    font-size: 16px;
+    border: none;
+    border-radius: 10px;
+    background-color: #000000;
+    color: #ffffff;
+    cursor: pointer;
+    transition: background-color 0.3s;
+    margin-left: 5px;
+}
+
+button:hover { background-color: #333333; }
+
+#response {
+    margin-top: 30px;
+    font-size: 18px;
+    max-width: 600px;
+    white-space: pre-line;
+}
+
+.reminder-section {
+    margin-top: 40px;
+    width: 100%;
+    max-width: 600px;
+    text-align: left;
+}
+
+.reminder-section input[type="text"],
+.reminder-section input[type="time"] {
+    padding: 10px;
+    font-size: 16px;
+    border-radius: 10px;
+    border: 1px solid #ccc;
+    margin-right: 5px;
+}
+
+.reminder-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background-color: #f7f7f7;
+    padding: 10px;
+    margin-top: 5px;
+    border-radius: 8px;
+    transition: background-color 0.3s;
+}
+
+.reminder-item.active {
+    animation: highlightFlash 1s infinite;
+}
+
+@keyframes highlightFlash {
+    0% { background-color: #ffd966; }
+    50% { background-color: #fff7cc; }
+    100% { background-color: #ffd966; }
+}
+
+.reminder-item button {
+    background-color: #28a745;
+    margin-left: 5px;
+}
+
+.reminder-item button:hover {
+    background-color: #218838;
+}
+</style>
+</head>
+<body>
+<h1>Daisy – Your Personal Assistant</h1>
+
+<button id="talkButton">Talk to Daisy</button>
+<div id="response"></div>
+
+<div class="reminder-section">
+    <h2>Set a Reminder</h2>
+    <input type="text" id="taskInput" placeholder="Enter your task here (use 'every day' for recurring)">
+    <input type="time" id="timeInput">
+    <button id="setReminderBtn">Set Reminder</button>
+
+    <h3>Upcoming Reminders:</h3>
+    <div id="reminderList"></div>
+</div>
+
+<script>
+const responseDiv = document.getElementById('response');
+const talkButton = document.getElementById('talkButton');
+const taskInput = document.getElementById('taskInput');
+const timeInput = document.getElementById('timeInput');
+const setReminderBtn = document.getElementById('setReminderBtn');
+const reminderList = document.getElementById('reminderList');
+
+let reminders = JSON.parse(localStorage.getItem('reminders') || "[]");
+
+// Display reminders with priority colors
+function displayReminders() {
+    reminderList.innerHTML = "";
+    reminders.forEach((reminder, index) => {
+        const div = document.createElement('div');
+        div.className = "reminder-item";
+        if (reminder.alerted) div.classList.add("active");
+
+        // Priority colors
+        let bgColor = "";
+        if (reminder.task.includes("[High]")) bgColor = "red";
+        else if (reminder.task.includes("[Medium]")) bgColor = "orange";
+        else if (reminder.task.includes("[Low]")) bgColor = "green";
+        if(bgColor && !reminder.alerted) div.style.backgroundColor = bgColor;
+
+        div.innerHTML = `
+            <span>${reminder.task} at ${reminder.time}${reminder.recurring ? " (daily)" : ""}</span>
+            <div>
+                <button onclick="editReminder(${index})">Edit</button>
+                <button onclick="markDone(${index})">Done</button>
+            </div>
+        `;
+        reminderList.appendChild(div);
+    });
+    localStorage.setItem('reminders', JSON.stringify(reminders));
+}
+
+// Add reminder from input
+setReminderBtn.addEventListener('click', () => {
+    const task = taskInput.value.trim();
+    const time = timeInput.value;
+    if (!task || !time) { alert("Enter task and time."); return; }
+    const recurring = task.toLowerCase().includes("every day");
+    reminders.push({ task, time, alerted: false, recurring });
+    displayReminders();
+    taskInput.value = ""; timeInput.value = "";
+});
+
+function markDone(index) {
+    reminders.splice(index, 1);
+    displayReminders();
+}
+
+function editReminder(index) {
+    const newTask = prompt("Edit task:", reminders[index].task);
+    const newTime = prompt("Edit time (HH:MM):", reminders[index].time);
+    if (newTask && newTime) {
+        reminders[index].task = newTask;
+        reminders[index].time = newTime;
+        reminders[index].alerted = false;
+        displayReminders();
+    }
+}
+
+// Voice recognition & commands
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+if(!SpeechRecognition) { responseDiv.innerText = "Your browser does not support voice recognition."; }
+else {
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'en-US';
+    recognition.interimResults = false;
+    let daisyReply = "";
+
+    talkButton.addEventListener('click', () => {
+        responseDiv.innerText = "Daisy is listening...";
+        recognition.start();
+    });
+
+    recognition.addEventListener('result', (event) => {
+        const transcript = event.results[0][0].transcript.toLowerCase();
+
+        // Add recurring daily reminder
+        if(transcript.includes("add a reminder to") && transcript.includes("every day")) {
+            const match = transcript.match(/add a reminder to (.+) every day at (\d{1,2}:\d{2})/);
+            if(match){
+                const task = match[1];
+                const time = match[2];
+                reminders.push({task,time,alerted:false,recurring:true});
+                displayReminders();
+                daisyReply = `Added daily reminder: ${task} at ${time}`;
+            } else daisyReply = "Could not parse your daily reminder.";
+        }
+        // Add one-time reminder
+        else if(transcript.includes("add a reminder to")) {
+            const match = transcript.match(/add a reminder to (.+) at (\d{1,2}:\d{2})/);
+            if(match){
+                const task = match[1];
+                const time = match[2];
+                reminders.push({task,time,alerted:false,recurring:false});
+                displayReminders();
+                daisyReply = `Added reminder: ${task} at ${time}`;
+            } else daisyReply = "Could not parse your reminder.";
+        }
+        // Show reminders
+        else if(transcript.includes("show me all my reminders")){
+            if(reminders.length===0) daisyReply="You have no reminders.";
+            else daisyReply="Your reminders:\n"+reminders.map(r=>`${r.task} at ${r.time}${r.recurring ? " (daily)" : ""}`).join("\n");
+        }
+        // Delete reminder
+        else if(transcript.includes("delete reminder")) {
+            const match = transcript.match(/delete reminder (.+)/);
+            if(match){
+                const taskName = match[1];
+                const index = reminders.findIndex(r=>r.task.toLowerCase().includes(taskName.toLowerCase()));
+                if(index>=0){ reminders.splice(index,1); displayReminders(); daisyReply=`Deleted reminder: ${taskName}`; }
+                else daisyReply=`No reminder found with name: ${taskName}`;
+            }
+        }
+        // Snooze reminder
+        else if(transcript.includes("snooze reminder")){
+            const match = transcript.match(/snooze reminder (.+) for (\d+) minutes/);
+            if(match){
+                const taskName = match[1];
+                const minutes = parseInt(match[2]);
+                const reminder = reminders.find(r=>r.task.toLowerCase().includes(taskName.toLowerCase()));
+                if(reminder){
+                    const [h,m] = reminder.time.split(":").map(Number);
+                    const date = new Date();
+                    date.setHours(h); date.setMinutes(m + minutes);
+                    reminder.time = date.toTimeString().slice(0,5);
+                    reminder.alerted = false;
+                    displayReminders();
+                    daisyReply=`Snoozed reminder: ${reminder.task} by ${minutes} minutes`;
+                } else daisyReply=`No reminder found with name: ${taskName}`;
+            }
+        }
+        // Natural language "in X minutes"
+        else if(transcript.includes("remind me in")){
+            const match = transcript.match(/remind me in (\d+) minutes? to (.+)/);
+            if(match){
+                const minutes = parseInt(match[1]);
+                const task = match[2];
+                const date = new Date();
+                date.setMinutes(date.getMinutes() + minutes);
+                const time = date.toTimeString().slice(0,5);
+                reminders.push({task,time,alerted:false,recurring:false});
+                displayReminders();
+                daisyReply = `Added reminder: ${task} in ${minutes} minutes`;
+            }
+        }
+        // Basic conversational replies
+        else if(transcript.includes("hello")) daisyReply="Hello, Benjamin! How can I help you today?";
+        else if(transcript.includes("how are you")) daisyReply="I'm great, Benjamin! How about you?";
+        else if(transcript.includes("time")){
+            const now=new Date();
+            daisyReply=`The current time is ${now.getHours()}:${now.getMinutes()}`;
+        }
+        else if(transcript.includes("date")){
+            const now=new Date();
+            daisyReply=`Today's date is ${now.getDate()}/${now.getMonth()+1}/${now.getFullYear()}`;
+        }
+        else if(transcript.includes("goodbye")) daisyReply="Goodbye! Talk to you soon.";
+        else daisyReply="I heard you, but I don't know how to respond yet.";
+
+        responseDiv.innerText=daisyReply;
+    });
+
+    recognition.addEventListener('end', ()=>{
+        if(daisyReply){
+            window.speechSynthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance(daisyReply);
+            window.speechSynthesis.speak(utterance);
+        }
+    });
+}
+
+// --- Check reminders every 30 seconds ---
+setInterval(()=>{
+    const now = new Date();
+    const currentTime = now.toTimeString().slice(0,5);
+    reminders.forEach((reminder,index)=>{
+        if(!reminder.alerted && reminder.time===currentTime){
+            reminder.alerted=true;
+            displayReminders();
+            responseDiv.innerText=`🔔 Reminder: ${reminder.task} at ${reminder.time}`;
+            window.speechSynthesis.cancel();
+            window.speechSynthesis.speak(new SpeechSynthesisUtterance(`Reminder: ${reminder.task} at ${reminder.time}`));
+
+            // Browser notification
+            if("Notification" in window){
+                if(Notification.permission==="granted"){
+                    new Notification(`Reminder: ${reminder.task}`, {body:`Scheduled for ${reminder.time}`});
+                } else if(Notification.permission!=="denied"){
+                    Notification.requestPermission().then(permission=>{
+                        if(permission==="granted"){
+                            new Notification(`Reminder: ${reminder.task}`, {body:`Scheduled for ${reminder.time}`});
+                        }
+                    });
+                }
+            }
+
+            if(reminder.recurring) reminder.alerted=false;
+        }
+    });
+},30000);
+
+displayReminders();
+</script>
+</body>
+</html>
