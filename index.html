@@ -81,12 +81,19 @@ button:hover { background-color: #333333; }
     <div id="reminderList"></div>
 </div>
 
+<input type="file" id="importFile" style="display:none;" />
+
 <script>
 const responseDiv = document.getElementById('response');
 const talkButton = document.getElementById('talkButton');
 const reminderList = document.getElementById('reminderList');
 
 let reminders = JSON.parse(localStorage.getItem('reminders') || "[]");
+
+// --- Alarm Setup ---
+const alarmAudio = new Audio('alarm.mp3'); // Place alarm.mp3 in project folder
+alarmAudio.loop = true;
+let alarmActiveReminder = null;
 
 // --- Helper Functions ---
 function saveReminders(){ localStorage.setItem('reminders',JSON.stringify(reminders)); }
@@ -170,7 +177,39 @@ else{
 
     recognition.addEventListener('result',(event)=>{
         const transcript=event.results[0][0].transcript.toLowerCase();
-        recognition.stop(); // Stop listening immediately
+        recognition.stop();
+
+        // --- Alarm voice commands ---
+        if(alarmActiveReminder){
+            const alarmTranscript = transcript;
+            
+            if(alarmTranscript.includes("snooze")){
+                const snoozeMatch = alarmTranscript.match(/snooze(?: for)? (\d+) minutes/);
+                if(snoozeMatch){
+                    const minutes = parseInt(snoozeMatch[1]);
+                    const [h,m] = alarmActiveReminder.time.split(":").map(Number);
+                    const date = new Date();
+                    date.setHours(h); date.setMinutes(m + minutes);
+                    alarmActiveReminder.time = date.toTimeString().slice(0,5);
+                    alarmActiveReminder.date = date;
+                    alarmActiveReminder.alerted = false;
+                    displayReminders();
+                    alarmAudio.pause();
+                    alarmAudio.currentTime = 0;
+                    responseDiv.innerText=`Snoozed reminder: ${alarmActiveReminder.task} by ${minutes} minutes`;
+                    alarmActiveReminder = null;
+                    return;
+                }
+            }
+
+            else if(alarmTranscript.includes("stop alarm") || alarmTranscript.includes("dismiss")){
+                alarmAudio.pause();
+                alarmAudio.currentTime = 0;
+                responseDiv.innerText=`Alarm stopped for: ${alarmActiveReminder.task}`;
+                alarmActiveReminder = null;
+                return;
+            }
+        }
 
         // --- Extract label ---
         let labelMatch = transcript.match(/-+ label (.+)/i);
@@ -202,7 +241,7 @@ else{
             daisyReply=`Okay, I'll remind you to ${task}${label?` [${label}]`:""}${recurringType?` ${recurringType}`:""} at ${tTime}`;
         }
 
-        // --- Show Reminders (with filter) ---
+        // --- Show Reminders ---
         else if(cleanTranscript.includes("show me")){
             let filtered = reminders;
             if(cleanTranscript.includes("high priority")) filtered = reminders.filter(r=>r.task.includes("[High]"));
@@ -216,7 +255,7 @@ else{
             else daisyReply="Your reminders:\n"+filtered.map(r=>`${r.task}${r.label?` [${r.label}]`:""} at ${r.time}${r.recurring?` (${r.recurring})`:""}`).join("\n");
         }
 
-        // --- Delete reminder ---
+        // --- Delete Reminder ---
         else if(cleanTranscript.includes("delete reminder") || cleanTranscript.includes("remove reminder")){
             const match=cleanTranscript.match(/(?:delete|remove) reminder (.+)/);
             if(match){
@@ -227,7 +266,7 @@ else{
             }
         }
 
-        // --- Edit, Snooze, Chat (same as before) ---
+        // --- Edit, Snooze ---
         else if(cleanTranscript.includes("edit reminder")){
             const match=cleanTranscript.match(/edit reminder (.+) to (\d{1,2}:\d{2})/);
             if(match){
@@ -273,19 +312,24 @@ else{
 setInterval(()=>{
     const now=new Date();
     const currentTime=now.toTimeString().slice(0,5);
+
     reminders.forEach(r=>{
         if(!r.alerted && r.time===currentTime){
             r.alerted=true;
             displayReminders();
             responseDiv.innerText=`🔔 Reminder: ${r.task} at ${r.time}`;
-            window.speechSynthesis.cancel();
-            window.speechSynthesis.speak(new SpeechSynthesisUtterance(`Reminder: ${r.task} at ${r.time}`));
+
+            // Play alarm sound
+            alarmAudio.play();
+            alarmActiveReminder = r;
 
             if("Notification" in window){
-                if(Notification.permission==="granted") new Notification(`Reminder: ${r.task}`,{body:`Scheduled for ${r.time}`});
+                if(Notification.permission==="granted")
+                    new Notification(`Reminder: ${r.task}`,{body:`Scheduled for ${r.time}`});
                 else if(Notification.permission!=="denied"){
                     Notification.requestPermission().then(p=>{
-                        if(p==="granted") new Notification(`Reminder: ${r.task}`,{body:`Scheduled for ${r.time}`});
+                        if(p==="granted")
+                            new Notification(`Reminder: ${r.task}`,{body:`Scheduled for ${r.time}`});
                     });
                 }
             }
@@ -306,20 +350,7 @@ setInterval(()=>{
 
 displayReminders();
 
-// --- Export / Import JSON ---
-document.getElementById("exportBtn").addEventListener("click",()=>{
-    const dataStr = JSON.stringify(reminders, null, 2);
-    const blob = new Blob([dataStr], {type:"application/json"});
-    const url = URL.createObjectURL(blob);
-    const a=document.createElement('a');
-    a.href=url; a.download="daisy_reminders.json"; a.click();
-    URL.revokeObjectURL(url);
-});
-
-document.getElementById("importBtn").addEventListener("click",()=>{
-    document.getElementById("importFile").click();
-});
-
+// --- Import JSON Only ---
 document.getElementById("importFile").addEventListener("change",(e)=>{
     const file = e.target.files[0];
     if(!file) return;
@@ -336,6 +367,8 @@ document.getElementById("importFile").addEventListener("change",(e)=>{
     };
     reader.readAsText(file);
 });
+
+// --- Service Worker ---
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/service-worker.js')
     .then(() => console.log('Service Worker Registered'))
